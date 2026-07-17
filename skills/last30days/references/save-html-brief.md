@@ -46,7 +46,11 @@ SYNTHESIS_EOF
 #    takes the generic multi-source path and the artifact's footer/metadata will
 #    describe a DIFFERENT dataset than your synthesis body (observed: a 74s
 #    mismatched re-run on a --hiring-signals brief). Same flags = footer matches
-#    the brief.
+#    the brief. This second pass is cheap when the short-TTL fetch cache is
+#    active (default on for --save-dir runs; LAST30DAYS_FETCH_CACHE_TTL): the
+#    GET-based sources are served from the first run's cache rather than
+#    re-fetched. Subprocess sources (X via Bird, YouTube via yt-dlp) are not
+#    cached and still re-run, so keep the scope flags tight.
 SLUG=$(echo "$TOPIC" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//')
 HTML_PATH="${LAST30DAYS_MEMORY_DIR}/${SLUG}-brief.html"
 # Collision guard: the `> "$HTML_PATH"` redirect below OVERWRITES - the engine

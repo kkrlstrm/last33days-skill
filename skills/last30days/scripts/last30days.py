@@ -660,6 +660,24 @@ def main() -> int:
     if config.get("LAST30DAYS_YOUTUBE_SSH_HOST") and "LAST30DAYS_YOUTUBE_SSH_HOST" not in os.environ:
         os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = config["LAST30DAYS_YOUTUBE_SSH_HOST"]
 
+    # Short-TTL fetch cache (lib/http.py). Enabled by default on real,
+    # artifact-saving runs so the --emit=html shareable-brief flow's *second*
+    # pipeline pass reuses the first run's GET responses instead of re-fetching
+    # every source (the second pass is otherwise a full ~74s re-run). Mock runs
+    # make no network calls, so leave them untouched. Any explicit user setting
+    # from the environment or ~/.config/last30days/.env wins (including a
+    # `LAST30DAYS_FETCH_CACHE=0` kill-switch); we only fill a default when unset.
+    if not args.mock:
+        for _cache_var in (
+            "LAST30DAYS_FETCH_CACHE_TTL",
+            "LAST30DAYS_FETCH_CACHE",
+            "LAST30DAYS_FETCH_CACHE_DIR",
+        ):
+            if _cache_var not in os.environ and config.get(_cache_var) is not None:
+                os.environ[_cache_var] = str(config[_cache_var])
+        if args.save_dir:
+            os.environ.setdefault("LAST30DAYS_FETCH_CACHE_TTL", "900")
+
     # Handle setup subcommand
     topic = " ".join(args.topic).strip()
     if topic.lower() == "setup":

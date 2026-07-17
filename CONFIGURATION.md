@@ -47,6 +47,18 @@ The engine's `.env` reader doesn't expand `$HOME` — only the tilde, via `Path(
 
 The footer line `📎 Raw results saved to ${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}/<slug>-raw.md` is the canonical pointer; if it shows backslashes on Windows update past v3.1.1.
 
+### Fetch cache (`LAST30DAYS_FETCH_CACHE_TTL`)
+
+A short-TTL, on-disk cache of idempotent **GET** responses. Its job is the `--emit=html` shareable-brief flow: that flow re-runs the whole pipeline in a *second* engine process to rebuild the badge/footer metadata, which without a cache re-fetches every source (observed ~74s). With the cache, the second pass reuses the first run's JSON-API responses.
+
+| Layer | Knob | Default |
+|-------|------|---------|
+| TTL (seconds) | `LAST30DAYS_FETCH_CACHE_TTL` | `900` on real runs that pass `--save-dir` (the SKILL.md wrapper always does); otherwise disabled |
+| Kill-switch | `LAST30DAYS_FETCH_CACHE=0` | unset (cache active per TTL) |
+| Cache directory | `LAST30DAYS_FETCH_CACHE_DIR` | `<tempdir>/last30days-fetch-cache` |
+
+Scope and safety: GET only (POST/LLM calls are never cached), HTTP 200 only (errors are never cached), and the cache key is `method + url + return-shape` — auth headers are excluded, so rotating credentials neither fragment the cache nor land on disk (only response text is stored). Subprocess sources (X via Bird, YouTube via yt-dlp) bypass this layer and still re-run. Set `LAST30DAYS_FETCH_CACHE=0` to force every fetch live.
+
 ---
 
 ## API keys (`.env`)

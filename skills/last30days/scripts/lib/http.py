@@ -1,13 +1,17 @@
 """HTTP utilities for last30days skill (stdlib only)."""
 
+import hashlib
 import json
+import os
 import re
 import socket
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any, Dict, Optional, Union
 from urllib.parse import urlencode
 
@@ -43,6 +47,93 @@ class HTTPError(Exception):
         super().__init__(message)
         self.status_code = status_code
         self.body = body
+
+
+# --- Short-TTL on-disk fetch cache -------------------------------------------
+# A cross-process response cache for idempotent GETs. Its purpose is the one
+# documented in SKILL.md: the `--emit=html` shareable-brief flow re-runs the
+# whole pipeline in a *second* engine process, and without a cache that second
+# run re-fetches every source (observed ~74s). With a short TTL the second run
+# reuses the first run's JSON-API responses instead.
+#
+# Disabled by default: only engages when LAST30DAYS_FETCH_CACHE_TTL is a
+# positive integer (the engine sets a conservative default for real runs; unit
+# tests and direct callers that don't set it get the un-cached path unchanged).
+# GET only, HTTP 200 only, never errors. Auth headers are NOT part of the cache
+# key, so rotating/streamed credentials neither fragment the cache nor leak into
+# it (the stored payload is response text only, never request headers).
+_CACHE_ENV_TTL = "LAST30DAYS_FETCH_CACHE_TTL"
+_CACHE_ENV_KILL = "LAST30DAYS_FETCH_CACHE"  # set to 0/false to hard-disable
+_CACHE_ENV_DIR = "LAST30DAYS_FETCH_CACHE_DIR"
+_cache_write_lock = threading.Lock()
+
+
+def _fetch_cache_ttl() -> int:
+    """Resolve the cache TTL in seconds; 0 (disabled) unless explicitly enabled."""
+    if (os.environ.get(_CACHE_ENV_KILL) or "").strip().lower() in ("0", "false", "no"):
+        return 0
+    raw = (os.environ.get(_CACHE_ENV_TTL) or "").strip()
+    if not raw:
+        return 0
+    try:
+        ttl = int(raw)
+    except ValueError:
+        return 0
+    return ttl if ttl > 0 else 0
+
+
+def _fetch_cache_dir() -> Path:
+    base = (os.environ.get(_CACHE_ENV_DIR) or "").strip()
+    if base:
+        path = Path(base).expanduser()
+    else:
+        path = Path(tempfile.gettempdir()) / "last30days-fetch-cache"
+    return path
+
+
+def _fetch_cache_key(method: str, url: str, raw: bool) -> str:
+    payload = f"{method.upper()}\n{url}\nraw={int(bool(raw))}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _fetch_cache_read(key: str, ttl: int) -> Optional[str]:
+    """Return the cached response body if a fresh entry exists, else None."""
+    entry = _fetch_cache_dir() / f"{key}.json"
+    try:
+        stat = entry.stat()
+    except OSError:
+        return None
+    if (time.time() - stat.st_mtime) > ttl:
+        return None
+    try:
+        record = json.loads(entry.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    body = record.get("body")
+    return body if isinstance(body, str) else None
+
+
+def _fetch_cache_write(key: str, body: str) -> None:
+    """Best-effort atomic write of a response body; never raises into a request."""
+    cache_dir = _fetch_cache_dir()
+    entry = cache_dir / f"{key}.json"
+    record = json.dumps({"body": body}).encode("utf-8")
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        with _cache_write_lock:
+            # Atomic replace so a concurrent reader never sees a half-written file.
+            fd, tmp_name = tempfile.mkstemp(dir=str(cache_dir), suffix=".tmp")
+            try:
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(record)
+                os.replace(tmp_name, entry)
+            except OSError:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+    except OSError:
+        pass  # a cache that can't be written must never fail the fetch
 
 
 def request(
@@ -95,6 +186,19 @@ def request(
     safe_url = re.sub(r'([?&])(key|api_key|token|secret)=[^&]*', r'\1\2=***', url)
     log(f"{method} {safe_url}")
 
+    # Idempotent-GET response cache (disabled unless a positive TTL is set).
+    # Only pure GETs (no JSON body) are cacheable; POST/LLM calls are never cached.
+    cache_ttl = _fetch_cache_ttl()
+    cache_key = None
+    if cache_ttl and method.upper() == "GET" and data is None:
+        cache_key = _fetch_cache_key(method, url, raw)
+        cached_body = _fetch_cache_read(cache_key, cache_ttl)
+        if cached_body is not None:
+            log(f"Cache hit ({len(cached_body)} bytes)")
+            if raw:
+                return cached_body
+            return json.loads(cached_body) if cached_body else {}
+
     last_error = None
     rate_limit_count = 0
     # DNS failures get a dedicated minimum attempt count + exponential backoff.
@@ -108,6 +212,9 @@ def request(
             with urllib.request.urlopen(req, timeout=timeout) as response:
                 body = response.read().decode('utf-8')
                 log(f"Response: {response.status} ({len(body)} bytes)")
+                # Cache only successful GET responses (never errors); best-effort.
+                if cache_key is not None and 200 <= getattr(response, "status", 200) < 300:
+                    _fetch_cache_write(cache_key, body)
                 if raw:
                     return body
                 return json.loads(body) if body else {}

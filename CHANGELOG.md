@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **SKILL.md slimmed into a leaner always-loaded contract (context-engineering).** The runtime contract had grown to ~1811 lines / ~37.7K tokens loaded on *every* invocation, with dozens of inline dated incident post-mortems and several large conditionally-needed template sections — the model repeatedly failed to reach rules near the bottom (the documented "I never reached line 1224" failure). Relocated the forensic post-mortems to a maintainer doc (`docs/solutions/architecture/skill-contract-incident-log.md`, ship-excluded) and moved conditionally-needed runtime content into just-in-time `references/` files (`query-type-templates.md`, `synthesis-guide.md`, `followup-and-prompts.md`) loaded only when relevant. **All 10 LAWs and every behavioral rule are unchanged** — only justifications and conditionally-loaded sections moved. Contract is now ~1504 lines / ~31K tokens (−17%).
+
+### Fixed
+
+- **`--emit=html` no longer silently re-fetches every source.** SKILL.md told the model "the engine cache covers the second invocation" of the shareable-brief flow, but no such cache existed: the HTML pass re-runs the whole pipeline (observed ~74s) to rebuild the badge/footer, re-fetching every source. Corrected the claim and added a short-TTL on-disk fetch cache (`lib/http.py`) so the second pass reuses the first run's responses. GET-only, HTTP-200-only, errors never cached; the cache key excludes auth headers (rotating credentials neither fragment the cache nor land on disk). On by default for `--save-dir` runs (`LAST30DAYS_FETCH_CACHE_TTL`, default 900s); `LAST30DAYS_FETCH_CACHE=0` disables. Subprocess sources (X via Bird, YouTube via yt-dlp) bypass the cache and still re-run.
+
 ## [3.6.0] - 2026-06-18
 
 ### Added
