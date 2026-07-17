@@ -127,6 +127,26 @@ class FetchCacheTests(unittest.TestCase):
             k1, http._fetch_cache_key("GET", "https://api.example.com/other", False)
         )
 
+    @patch("lib.http.urllib.request.urlopen")
+    def test_url_query_credentials_do_not_fragment_cache(self, mock_urlopen):
+        # A rotating api_key in the query string must not cause a cache miss:
+        # the key is derived from the credential-masked safe_url, so the second
+        # request (different key, same logical URL) is served from cache.
+        mock_urlopen.return_value = _mock_response('{"v": 1}')
+        http.get("https://api.example.com/s?q=x&api_key=AAA")
+        result = http.get("https://api.example.com/s?q=x&api_key=BBB")
+        self.assertEqual({"v": 1}, result)
+        self.assertEqual(1, mock_urlopen.call_count)
+
+    def test_default_cache_dir_is_user_specific(self):
+        # The default temp dir carries the uid/username so it can't collide with
+        # another user's dir on a shared host.
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("LAST30DAYS_FETCH_CACHE_DIR", None)
+            name = http._fetch_cache_dir().name
+        self.assertTrue(name.startswith("last30days-fetch-cache-"))
+        self.assertNotEqual(name, "last30days-fetch-cache-")
+
 
 if __name__ == "__main__":
     unittest.main()

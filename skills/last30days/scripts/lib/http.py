@@ -87,7 +87,14 @@ def _fetch_cache_dir() -> Path:
     if base:
         path = Path(base).expanduser()
     else:
-        path = Path(tempfile.gettempdir()) / "last30days-fetch-cache"
+        # Per-user default dir: on a shared host, one user creating
+        # /tmp/last30days-fetch-cache would otherwise leave every other user's
+        # writes failing with PermissionError (silently disabling their cache).
+        try:
+            who = str(os.getuid())  # POSIX: stable, not env-spoofable
+        except AttributeError:  # Windows
+            who = os.environ.get("USERNAME") or os.environ.get("USER") or "shared"
+        path = Path(tempfile.gettempdir()) / f"last30days-fetch-cache-{who}"
     return path
 
 
@@ -191,7 +198,11 @@ def request(
     cache_ttl = _fetch_cache_ttl()
     cache_key = None
     if cache_ttl and method.upper() == "GET" and data is None:
-        cache_key = _fetch_cache_key(method, url, raw)
+        # Key on safe_url (credentials masked) so rotating an api_key/token in
+        # the query string neither fragments the cache nor feeds the raw secret
+        # into the hash input. Masked params are auth, not response-selecting,
+        # so two logically-identical requests share one entry.
+        cache_key = _fetch_cache_key(method, safe_url, raw)
         cached_body = _fetch_cache_read(cache_key, cache_ttl)
         if cached_body is not None:
             log(f"Cache hit ({len(cached_body)} bytes)")
